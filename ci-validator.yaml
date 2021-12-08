@@ -1,0 +1,78 @@
+#cloud-config
+swap:
+  filename: /swap
+  size: "auto" # or size in bytes
+  maxsize: 8000000000
+users:
+  - default
+  - name: cosmos
+package_update: true
+package_upgrade: false
+packages:
+ - tmux
+ - htop
+runcmd:
+ - mkdir -p /tmp/ci
+ - echo "Getting vpncloud and configuring fw rules"
+ - ufw allow from 10.0.0.0/24
+ - ufw allow out to 10.0.0.0/24
+ - ufw allow 3210/udp
+ - wget -O /usr/local/bin/vpncloud https://github.com/dswd/vpncloud/releases/download/v2.2.0/vpncloud_2.2.0_static_amd64
+ - chmod a+x /usr/local/bin/vpncloud
+ - wget -O /usr/local/bin/gaiad https://github.com/cosmos/gaia/releases/download/v5.0.8/gaiad-v5.0.8-linux-amd64
+ - chmod a+x /usr/local/bin/gaiad
+ - rm -rf /usr/local/go 
+ - wget -O /tmp/ci/go.tar.gz https://go.dev/dl/go1.17.4.linux-amd64.tar.gz
+ - tar -C /usr/local -xzf /tmp/ci/go.tar.gz
+ - rm -rf /tmp/ci
+ - su -lc 'go install github.com/cosmos/cosmos-sdk/cosmovisor/cmd/cosmovisor@latest' cosmos
+ - su -lc 'go install github.com/schollz/croc/v9@latest' cosmos
+ - su -lc 'mkdir -p /home/cosmos/.gaia/cosmovisor/genesis/bin' cosmos
+ - ln -s /usr/local/bin/gaiad /home/cosmos/.gaia/cosmovisor/genesis/bin/gaiad
+ - chmod 555 /home/cosmos/.gaia/cosmovisor/genesis/bin/gaiad
+ - su -lc 'gaiad init tf-hackatom-validator' cosmos
+write_files:
+ - path: /etc/profile
+   content: | 
+     export TERM=xterm
+     export PATH=$PATH:$HOME/go/bin:/usr/local/go/bin
+   append: true
+ - path: /etc/vpncloud/ha.net
+   content: | 
+     device:
+       fix-rp-filter: true
+     mode: switch
+     claims: 
+       - 10.0.0.0/16
+ - path: /etc/systemd/system/vpncloud.service
+   content: |
+     [Unit]
+     Description=vpncloud
+     After=network-online.target
+
+     [Install]
+     WantedBy=multi-user.target
+     
+     [Service]
+     Restart=always
+     RestartSec=3
+ - path: /etc/systemd/system/cosmovisor.service
+   content: |
+     [Unit]
+     Description=cosmovisor
+     After=network-online.target
+     
+     [Service]
+     User=cosmos
+     ExecStart=/home/cosmos/go/bin/cosmovisor start --x-crisis-skip-assert-invariants --p2p.laddr tcp://10.0.0.100:26656 --p2p.pex false
+     Restart=always
+     RestartSec=3
+     LimitNOFILE=4096
+     Environment="DAEMON_NAME=gaiad"
+     Environment="DAEMON_HOME=/home/cosmos/.gaia"
+     Environment="DAEMON_ALLOW_DOWNLOAD_BINARIES=true"
+     Environment="DAEMON_RESTART_AFTER_UPGRADE=true"
+     Environment="DAEMON_LOG_BUFFER_SIZE=512"
+     
+     [Install]
+     WantedBy=multi-user.target
